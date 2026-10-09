@@ -13,7 +13,7 @@ When the user asks you to push or ship: commit (step 1 below), push, and open th
 
 1. Look before you write: `npx -y buzzcut context` for a commit, `npx -y buzzcut context --kind pr` for a PR. It maps the diff by area with line counts, lists the test, doc and generated files and the pure renames, shows the branch's commits, and gives the shape and word range for a diff this size, plus how this repo writes its commits.
 2. Write the draft to a file: `.git/BUZZCUT_MSG` for a commit, a temp file for a PR body.
-3. Reread every line against the diff before buzzcut sees it (see "Say exactly what the diff does" below). buzzcut checks file names and line counts, not what the code does, so this pass is yours.
+3. Reread the draft twice before buzzcut sees it. Once against the diff (see "Say exactly what the diff does" below): buzzcut looks up names and files, but not what the code does, so this pass is yours. Once against what you were given (the author's notes, the issue, the conversation, an old description): anything from there that a reviewer needs and isn't in the draft goes in (see "Carry over what you were given").
 4. Check it:
    - Commit: `npx -y buzzcut check .git/BUZZCUT_MSG` (compares against the staged diff)
    - PR: `npx -y buzzcut pr <body-file> --title "<title>"` (compares against the base branch; add `--base <branch>` if it isn't main or master)
@@ -27,7 +27,20 @@ If buzzcut can't run at all (no npx, no network), follow the rules below without
 
 ## Keep the facts, cut the yap
 
-Short means no padding, not fewer facts. A description that's too thin fails the reviewer as badly as one that's padded, and buzzcut's word range is a ceiling, not a target. If a big change is mostly facts, a long description is fine: buzzcut gives dense text more room and only blocks padding.
+Short means no padding, not fewer facts. A description that's too thin fails the reviewer as badly as one that's padded, and buzzcut's word range is a ceiling, not a target. If keeping a fact puts you over the range, keep the fact. If a big change is mostly facts, a long description is fine: buzzcut gives dense text more room and only blocks padding.
+
+**Carry over what you were given.** The author already told you things a reviewer needs. Go through what you have (the author's notes, the issue, the conversation, an old description) and make sure each of these is in yours, if it's there:
+
+- the issue link with its word: `Closes #12` or `Fixes #12`, not just `#12`
+- other PRs and issues they mention, and why (merge this first, a related fix, who asked)
+- a question they're asking, feedback they want, or that it's a draft
+- what it doesn't do or leaves for later, and what still works as before
+- docs, threads and other links they cite, with what each is for
+- what they ran and what it showed, "tests pass" included
+- an example, expected output or config they gave
+- the reason, in their words
+
+What you cut is what's left: restating the title, the file-by-file tour, generic claims, and the boilerplate of a PR template.
 
 **Keep, always:**
 
@@ -56,29 +69,29 @@ Write in the language the repo's commits and PRs already use (`git log --oneline
 
 Title: what changed, specific, 72 characters or fewer ("Retry webhook deliveries on 5xx and 429", not "Webhook improvements"). Follow the repo's title style: if its commits or PRs use prefixes (`ci:`, `fix(api):`), so does yours. Plain words, no filler: "Build math.pdf in the docs job", not "…so math.pdf actually compiles". If the PR already has a title that's specific and in the repo's style, keep it.
 
-Updating a description that's already clear (says what and why, true to the diff)? Change only what's missing, usually the Tested line, and keep its structure. Don't restyle a good PR to match this shape.
+Updating a description that's already clear (says what and why, true to the diff)? Change only what's missing, usually the why or a fact that was dropped, and keep its structure. Don't restyle a good PR to match this shape.
 
 Body, in this order:
 
 1. **Opening, 1 or 2 sentences: what changed and why.** The why comes from this session: the bug, the error message (quote it), the issue link, who asked for it. Say it in plain words, with no "What:" or "Why:" labels. If the session never says why, say what changed and leave the why out: a guessed reason is worse than none, and buzzcut's "never says why" is advice, not a reason to invent one.
-2. **Bullets, 2 to 5 (more on big diffs): the changes a reviewer would ask about.** One change per bullet, about 25 words at most: where to look (the function, setting or endpoint) and the concrete values, old → new, limits, defaults. A bullet that runs past that is two changes or has reasoning in it: split it, and put the reasoning in the opening. Group by area, never file by file. Say which part is mechanical and roughly how much of the diff it is.
+2. **Bullets, 2 to 5 (more on big diffs): the changes a reviewer would ask about.** One change per bullet, about 25 words at most: where to look (the function, setting or endpoint) and the concrete values, old → new, limits, defaults. A bullet that runs past that is two changes or has reasoning in it: split it, and put the reasoning in the opening. Group by area, never file by file. Say which part is mechanical and how many of the lines it is (the counts are in `buzzcut context`; use them, not a percentage).
 3. **Optional, one line:** a risk, breaking change, migration or follow-up.
-4. **`Tested:`** with the commands you actually ran in this session and what they returned (`npm test`, 212 passed). If you ran nothing, write `Not tested:` and what should be checked. Write what you saw, no more: "ran `cargo test`" isn't "`cargo test` passed" unless you saw it pass, and a test plan or a "How to test" list isn't a run: those steps go under `Not tested:`. buzzcut reads the session and blocks "tests pass" when nothing ran. Never tick a checkbox you didn't check.
+4. **`Tested:`, when something ran.** The commands you ran in this session, or that the author or CI told you ran, and what they returned (`npm test`, 212 passed; "tests pass" from the author's notes counts). Write what you saw, no more: "ran `cargo test`" isn't "`cargo test` passed" unless you saw it pass, and a test plan or a "How to test" list isn't a run. If nothing ran and nobody told you what did, leave testing out: no "Not tested" line, because a reviewer learns nothing from it (CI and review are how an unrun change gets checked). If something a reviewer should look at was never exercised, say so in the risk line (step 3), in plain words. buzzcut reads the session and blocks "tests pass" when nothing ran. Never tick a checkbox you didn't check.
 
 Scale it with the diff (`buzzcut context` says which one this is):
 
-- **Tiny** (under ~30 changed lines): the opening and the Tested line. Bullets only if there are 2 or more separate behavior changes.
-- **Normal** (~30 to 300 lines): the opening, 2 to 5 bullets, the Tested line.
+- **Tiny** (under ~30 changed lines): the opening and what you were given that a reviewer needs, then what you ran if you ran something. Bullets only if there are 2 or more separate behavior changes.
+- **Normal** (~30 to 300 lines): the opening, 2 to 5 bullets, what you were given that a reviewer needs, then what you ran if you ran something.
 - **Big** (300+ lines): the same, and a few short plain headers are fine (Behavior changes / What's mechanical / How to review / Risk). See "Big changes" below.
 
-The diff tells you what changed, where, and the values. Only the session tells you why and what was tested: take those from the conversation and the commands you ran, never from the diff. If the repo has a PR template, fill it in briefly in this shape; buzzcut doesn't count its boilerplate. Prefer this shape over generic "Summary / Changes / Test plan" templates unless the user or the repo asks for one.
+The diff tells you what changed, where, and the values. Only the session tells you why and what you ran: take those from the conversation and the commands you ran, never from the diff. If the repo has a PR template, fill it in briefly in this shape; buzzcut doesn't count its boilerplate. Prefer this shape over generic "Summary / Changes / Test plan" templates unless the user or the repo asks for one.
 
 ## Big changes (refactors, migrations, thousands of lines)
 
 A big diff needs a map, not a tour. `buzzcut context` says where the lines are, which files are tests, generated or only renamed, and what the branch's commits were.
 
 - Open with what changed overall and why now.
-- Say what's mechanical (renames, moves, formatting, generated code) and roughly how much of the diff it is, so the reviewer can skim it.
+- Say what's mechanical (renames, moves, formatting, generated code) and how many lines it is (the counts are in `buzzcut context`), so the reviewer can skim it.
 - List the behavior changes that need a real review, one per bullet of about 25 words, each with where to look (the function or area, not every file) and the values. A big diff gets more bullets, not longer ones.
 - Say how to review it: an order, or which commits are mechanical if the history is split that way. Then risk, rollback if it matters, and what you ran to verify it.
 - Group by area, never file by file.

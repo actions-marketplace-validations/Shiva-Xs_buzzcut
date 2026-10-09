@@ -227,7 +227,9 @@ function fakeGitHub(routes: Record<string, unknown>, calls: Call[]): typeof fetc
   }) as typeof fetch;
 }
 
-function ciEnv(body: string, extra: Record<string, string> = {}) {
+const AGENT = { login: 'copilot-swe-agent[bot]', type: 'Bot' };
+
+function ciEnv(body: string, extra: Record<string, string> = {}, user: { login: string; type: string } = { login: 'dev', type: 'User' }) {
   const dir = mkdtempSync(join(tmpdir(), 'buzzcut-ci-'));
   const event = join(dir, 'event.json');
   writeFileSync(
@@ -241,7 +243,7 @@ function ciEnv(body: string, extra: Record<string, string> = {}) {
         additions: 7,
         deletions: 2,
         changed_files: 1,
-        user: { login: 'dev', type: 'User' },
+        user,
         base: { sha: 'base', ref: 'main' },
       },
     }),
@@ -279,8 +281,8 @@ const ROUTES = {
 };
 
 describe('GitHub Action', () => {
-  it('fails a bloated PR, comments once, and writes the summary and outputs', async () => {
-    const c = ciEnv(fixture('bloated-pr.md'));
+  it("fails a coding agent's bloated PR, comments once, and writes the summary and outputs", async () => {
+    const c = ciEnv(fixture('bloated-pr.md'), {}, AGENT);
     const calls: Call[] = [];
     const lines: string[] = [];
     const code = await runCi({ env: c.env, fetch: fakeGitHub(ROUTES, calls), cwd: c.dir, log: (l) => lines.push(l) });
@@ -292,6 +294,38 @@ describe('GitHub Action', () => {
     expect(readFileSync(c.output, 'utf8')).toContain('pass=false');
     expect(calls.some((x) => x.url.includes('/commits/bbbbbbb2'))).toBe(false); // merge commit skipped
     expect(lines.join('\n')).toContain('::error::');
+  });
+
+  it("warns, comments and reports pass=false for a person's bloated PR, but does not fail the job", async () => {
+    const c = ciEnv(fixture('bloated-pr.md'));
+    const calls: Call[] = [];
+    const lines: string[] = [];
+    const code = await runCi({ env: c.env, fetch: fakeGitHub(ROUTES, calls), cwd: c.dir, log: (l) => lines.push(l) });
+    expect(code).toBe(0);
+    expect(calls.some((x) => x.method === 'POST')).toBe(true);
+    expect(readFileSync(c.output, 'utf8')).toContain('pass=false');
+    expect(lines.join('\n')).toContain('::warning::buzzcut: the PR description');
+    expect(lines.join('\n')).not.toContain('::error::');
+  });
+
+  it('fails a person too when the repo blocks always, or the action says fail: always', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buzzcut-ws-'));
+    writeFileSync(join(dir, '.buzzcut.json'), JSON.stringify({ block: 'always' }));
+    const a = ciEnv(fixture('bloated-pr.md'), { GITHUB_WORKSPACE: dir });
+    expect(await runCi({ env: a.env, fetch: fakeGitHub(ROUTES, []), cwd: a.dir, log: () => {} })).toBe(1);
+    const b = ciEnv(fixture('bloated-pr.md'), { INPUT_FAIL: 'always' });
+    expect(await runCi({ env: b.env, fetch: fakeGitHub(ROUTES, []), cwd: b.dir, log: () => {} })).toBe(1);
+    const never = ciEnv(fixture('bloated-pr.md'), { GITHUB_WORKSPACE: dir, INPUT_FAIL: 'false' });
+    expect(await runCi({ env: never.env, fetch: fakeGitHub(ROUTES, []), cwd: never.dir, log: () => {} })).toBe(0);
+  });
+
+  it("treats a PR from a person's account as an agent's when the text carries an agent footer", async () => {
+    const withFooter = fixture('bloated-pr.md') + '\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n';
+    const c = ciEnv(withFooter);
+    expect(await runCi({ env: c.env, fetch: fakeGitHub(ROUTES, []), cwd: c.dir, log: () => {} })).toBe(1);
+    const routes = { ...ROUTES, 'GET /pulls/7/commits': [{ sha: 'aaaaaaa1', commit: { message: 'Added comprehensive retries.\n\nCo-Authored-By: Claude <noreply@anthropic.com>' }, parents: [{ sha: 'p' }] }] };
+    const d = ciEnv(fixture('bloated-pr.md'));
+    expect(await runCi({ env: d.env, fetch: fakeGitHub(routes, []), cwd: d.dir, log: () => {} })).toBe(1);
   });
 
   it('passes a good PR without commenting', async () => {
@@ -324,7 +358,7 @@ describe('GitHub Action', () => {
   });
 
   it('warns instead of crashing when it may not comment (fork PRs)', async () => {
-    const c = ciEnv(fixture('bloated-pr.md'), { INPUT_COMMITS: 'false' });
+    const c = ciEnv(fixture('bloated-pr.md'), { INPUT_COMMITS: 'false' }, AGENT);
     const lines: string[] = [];
     const routes = { ...ROUTES };
     delete (routes as Record<string, unknown>)['POST /issues/7/comments'];
@@ -345,9 +379,87 @@ describe('GitHub Action', () => {
     expect(await runCi({ env: c.env, fetch: fakeGitHub(routes, calls), cwd: c.dir, log: () => {} })).toBe(0);
     expect(readFileSync(c.summary, 'utf8')).toContain('1 commit message checked ✓');
     push([{ id: 'aaaaaaa1', message: 'fix bug' }]);
-    expect(await runCi({ env: c.env, fetch: fakeGitHub(routes, calls), cwd: c.dir, log: () => {} })).toBe(1);
+    const lines: string[] = [];
+    expect(await runCi({ env: c.env, fetch: fakeGitHub(routes, calls), cwd: c.dir, log: (l) => lines.push(l) })).toBe(0);
+    expect(lines.join('\n')).toContain('::warning::');
     expect(readFileSync(c.summary, 'utf8')).toContain('1 of 1 commit message need work');
+    push([{ id: 'aaaaaaa1', message: 'fix bug\n\nCo-Authored-By: Claude <noreply@anthropic.com>' }]);
+    expect(await runCi({ env: c.env, fetch: fakeGitHub(routes, calls), cwd: c.dir, log: () => {} })).toBe(1);
     expect(calls.some((x) => x.method !== 'GET')).toBe(false);
+  });
+
+  it('shows a lookup note on a PR that passes, and comments on it', async () => {
+    const body = 'Retries `send()` on a 5xx, and adds an `X-Retry-Budget` header so receivers can see the attempts left.\n\nTested: not run.';
+    const c = ciEnv(body, { GITHUB_WORKSPACE: mkdtempSync(join(tmpdir(), 'buzzcut-ws-')) });
+    const routes = { ...ROUTES, 'GET /pulls/7/files': [{ filename: 'src/webhook.ts', additions: 3, deletions: 1, patch: '@@ -1 +1,3 @@\n-a\n+export function send(url, tries = 3) {}\n+const x = 1;' }], 'GET /pulls/7/commits': [] };
+    const calls: Call[] = [];
+    const code = await runCi({ env: c.env, fetch: fakeGitHub(routes, calls), cwd: c.dir, log: () => {} });
+    // no checkout in the test workspace, so no repo search: the note needs one; with none it stays silent
+    expect(code).toBe(0);
+    expect(calls.some((x) => x.method === 'POST')).toBe(false);
+  });
+
+  describe('the optional AI check', () => {
+    const PATCH = '@@ -1 +1,2 @@\n-  return res.ok;\n+  if (res.status < 500) return res.ok;\n+  await sleep(200 * 2 ** i);';
+    const aiRoutes = (reply: unknown) => ({
+      ...ROUTES,
+      'GET /pulls/7/files': [{ filename: 'src/webhook.ts', additions: 2, deletions: 1, patch: PATCH }],
+      'GET /pulls/7/commits': [],
+      'POST /v1/messages': { content: [{ type: 'text', text: JSON.stringify(reply) }] },
+    });
+    const GOOD = 'Webhook sends now retry when the server answers 5xx, waiting 200ms and doubling it each attempt.\n\nTested: not run.';
+    const supported = [{ n: 1, verdict: 'supported', quote: 'if (res.status < 500) return res.ok;' }, { n: 2, verdict: 'unsupported', quote: '' }];
+
+    it('is off unless asked for: nothing is sent to a provider', async () => {
+      const c = ciEnv(GOOD);
+      const calls: Call[] = [];
+      await runCi({ env: c.env, fetch: fakeGitHub(aiRoutes(supported), calls), cwd: c.dir, log: () => {} });
+      expect(calls.some((x) => x.url.includes('anthropic.com'))).toBe(false);
+    });
+
+    it('adds a collapsed advice section to the summary, and never changes the exit code', async () => {
+      const c = ciEnv(GOOD, { INPUT_AI: 'true', 'INPUT_AI-API-KEY': 'sk-test' });
+      const calls: Call[] = [];
+      const code = await runCi({ env: c.env, fetch: fakeGitHub(aiRoutes(supported), calls), cwd: c.dir, log: () => {} });
+      expect(code).toBe(0);
+      const summary = readFileSync(c.summary, 'utf8');
+      expect(summary).toContain('AI check, advice only');
+      expect(summary).toContain('| ✓ |');
+      expect(readFileSync(c.output, 'utf8')).toContain('pass=true');
+      expect(calls.some((x) => x.url.includes('api.anthropic.com/v1/messages'))).toBe(true);
+    });
+
+    it('posts a comment for a sentence the diff does not support even when the PR passes', async () => {
+      const c = ciEnv(GOOD, { INPUT_AI: 'true', 'INPUT_AI-API-KEY': 'sk-test' });
+      const calls: Call[] = [];
+      await runCi({ env: c.env, fetch: fakeGitHub(aiRoutes(supported), calls), cwd: c.dir, log: () => {} });
+      const post = calls.find((x) => x.method === 'POST' && x.url.includes('/issues/7/comments'));
+      expect((post?.body as { body: string }).body).toContain('1 not supported by the diff');
+    });
+
+    it('is skipped with a notice when there is no key, as on a fork PR, and with a warning for an unknown provider', async () => {
+      const lines: string[] = [];
+      const c = ciEnv(GOOD, { INPUT_AI: 'true' });
+      const calls: Call[] = [];
+      expect(await runCi({ env: c.env, fetch: fakeGitHub(aiRoutes(supported), calls), cwd: c.dir, log: (l) => lines.push(l) })).toBe(0);
+      expect(lines.join('\n')).toContain('there is no ai-api-key');
+      expect(calls.some((x) => x.url.includes('anthropic.com'))).toBe(false);
+      const d = ciEnv(GOOD, { INPUT_AI: 'true', 'INPUT_AI-API-KEY': 'k', 'INPUT_AI-PROVIDER': 'openai' });
+      const more: string[] = [];
+      await runCi({ env: d.env, fetch: fakeGitHub(aiRoutes(supported), []), cwd: d.dir, log: (l) => more.push(l) });
+      expect(more.join('\n')).toContain('ai-provider must be');
+    });
+
+    it('reports a provider failure as a warning and carries on', async () => {
+      const c = ciEnv(GOOD, { INPUT_AI: 'true', 'INPUT_AI-API-KEY': 'bad' });
+      const routes = { ...aiRoutes(supported) } as Record<string, unknown>;
+      delete routes['POST /v1/messages']; // the fake answers 404
+      const lines: string[] = [];
+      const code = await runCi({ env: c.env, fetch: fakeGitHub(routes, []), cwd: c.dir, log: (l) => lines.push(l) });
+      expect(code).toBe(0);
+      expect(lines.join('\n')).toContain('::warning::buzzcut: the AI check failed and was skipped');
+      expect(readFileSync(c.summary, 'utf8')).not.toContain('AI check');
+    });
   });
 
   it('skips other events and bot PRs', async () => {

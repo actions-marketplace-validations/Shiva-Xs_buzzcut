@@ -4,9 +4,9 @@
 
 **AI yaps, we cut. Pull requests written like the good old days.**
 
-Your agent writes the code. buzzcut makes the commit messages and PR descriptions it writes say what changed and why, in plain words, so your reviewers read the PR itself instead of pasting it into another AI to find out what it does. Each draft is checked against the diff before it runs; when it's a form, a file tour or padding, the agent is told exactly what to cut and rewrites it. You don't do anything.
+Your agent writes the code. buzzcut makes the commit messages and PR descriptions it writes say what changed and why, in plain words, so your reviewers read the PR itself instead of pasting it into another AI to find out what it does. Each draft is checked before it runs: the names, files and test counts it cites are looked up in the diff, the repo and the agent's session, and when it's a form, a file tour or padding, the agent is told exactly what to cut and rewrites it. You don't do anything.
 
-No API key, no LLM, zero dependencies. Works in Claude Code, Cursor, Windsurf, Antigravity, VS Code and the terminal.
+No API key and zero dependencies. The checks are deterministic: no model is called (the GitHub Action has an optional AI check that is off by default). Works in Claude Code, Cursor, Windsurf, Antigravity, VS Code and the terminal.
 
 [![npm](https://img.shields.io/npm/v/buzzcut?color=3fb950&label=npm)](https://www.npmjs.com/package/buzzcut)
 [![ci](https://github.com/Shiva-Xs/buzzcut/actions/workflows/ci.yml/badge.svg)](https://github.com/Shiva-Xs/buzzcut/actions/workflows/ci.yml)
@@ -20,7 +20,7 @@ No API key, no LLM, zero dependencies. Works in Claude Code, Cursor, Windsurf, A
 
 Senior engineers keep saying it: AI-written PRs are hard to read. `## Summary / ## Changes / ## Testing` on a 9-line fix, a bold label on every bullet, a tour of files the diff already shows, boxes ticked for tests nobody ran. So reviewers paste the PR into another AI to find out what changed.
 
-In 1,275 real PRs opened by coding agents in 2026, 20% never said why and 21% never said how the change was tested ([bench/](bench)). We're not going to stop coding with AI, so buzzcut makes what it writes read like a good engineer's PR from before AI: what changed and why, the few changes a reviewer would ask about, and what was tested. Not squeezed into one paragraph, not a form.
+In 1,275 real PRs opened by coding agents in 2026, 20% never said why ([bench/](bench)). We're not going to stop coding with AI, so buzzcut makes what it writes read like a good engineer's PR from before AI: what changed and why, the few changes a reviewer would ask about, and what was run, if anything was. Not squeezed into one paragraph, not a form.
 
 ## Install once
 
@@ -33,10 +33,10 @@ buzzcut setup
 
 | Where | How buzzcut steps in | Tested with the real app |
 |---|---|---|
-| Claude Code (terminal and VS Code extension) | Skill + PreToolUse hook + git hooks | ✅ Blocked, rewrote and committed in 5 sessions; PRs through `gh` and a GitHub MCP connector |
-| Antigravity | Skill + PreToolUse hook + git hooks | ✅ Blocked `"Update webhook.js"`; the agent rewrote and committed |
-| Cursor | Skill + beforeShellExecution hook + git hooks | ✅ Blocked `"Update webhook.js"`; the agent rewrote and committed |
-| Windsurf | Skill + pre_run_command hook + git hooks | ✅ Blocked `"Update webhook.js"`; the agent rewrote and committed |
+| Claude Code (terminal and VS Code extension) | Skill + PreToolUse hook + git hooks | ✅ 0.3: five live sessions blocked a lazy commit and bloated PRs, and the agent rewrote and committed; PRs through `gh` and a GitHub MCP connector |
+| Antigravity | Skill + PreToolUse hook + git hooks | ✅ (checked on 0.1) Blocked `"Update webhook.js"`; the agent rewrote and committed |
+| Cursor | Skill + beforeShellExecution hook + git hooks | ✅ (checked on 0.1) Blocked `"Update webhook.js"`; the agent rewrote and committed |
+| Windsurf | Skill + pre_run_command hook + git hooks | ✅ (checked on 0.1) Blocked `"Update webhook.js"`; the agent rewrote and committed |
 | VS Code (Copilot agent, ✨ buttons) | Skill + agent hook + button instructions + git hooks | Built to VS Code's documented format |
 | Codex, Gemini CLI, others | Skill + git hooks | |
 | Any terminal, any person | Git hooks (warn only) | ✅ End-to-end tests with real `git commit` and `git push` |
@@ -51,7 +51,9 @@ You say "push this and open a PR". The agent loads the buzzcut skill and runs `b
 
 Coding agents are sent back; people only ever get a warning (change that with `"block"` in the config).
 
-**Sent back:** claims the diff or the session contradicts ("added unit tests" with no test file changed, "tests pass" when nothing ran), subjects that say nothing ("fix bug", "Update webhook.js"), a Summary / Changes / Testing form on a small diff, a commit body that lists every change, extreme bloat, and a rewrite that drops facts (numbers, errors, links, `file:line`).
+**Sent back:** claims the diff or the session contradicts ("added unit tests" with no test file changed, "tests pass" when nothing ran, a test count that isn't what the run printed), subjects that say nothing ("fix bug", "Update webhook.js"), a Summary / Changes / Testing form on a small diff, a commit body that lists every change, extreme bloat, and a rewrite that drops facts (numbers, errors, links, `file:line`).
+
+**Notes, not blocks:** a name, file or figure it can't find in the diff, the repo before the change, or the session; "adds X" about something the diff removes; an area holding 40% or more of the changed lines that the description never mentions. The agent gets them as advice; make the name check block with `"rules": {"unsourced-name": "error"}`. See the [CHANGELOG](CHANGELOG.md) for what changed in each release.
 
 **Advice only:** a bit long, a few extra bullets, a buzzword, no reason given. buzzcut cuts fluff, never facts: a long PR full of facts is never sent back for its length. Every rule, the yap score and the word budget are in [docs/how-it-works.md](docs/how-it-works.md).
 
@@ -153,7 +155,7 @@ Optional. `.buzzcut.json` at the repo root (or a `"buzzcut"` key in `package.jso
 | `max` | `35` | Highest passing yap score |
 | `block` | `"agents"` | Who a failing message blocks: `"agents"` (people get a warning), `"always"`, or `"never"` (advice only) |
 | `length` | `"normal"` | How long descriptions should be: `"short"` (0.6× the words and bullets), `"normal"`, or `"detailed"` (1.6×). `buzzcut context` passes it to the agent, so it writes to that length the first time. The checks for false claims and dropped facts are the same at every length |
-| `rules` | `{}` | Per rule: `"off"`, `"info"`, `"warn"` or `"error"` |
+| `rules` | `{}` | Per rule: `"off"`, `"info"`, `"warn"` or `"error"` (for example `"unsourced-name": "error"` makes a name it can't find block) |
 | `ignore` | `[]` | Regexes for subjects to skip, on top of the built-in ones |
 
 A typo in a rule name is an error, not a silently ignored setting. A broken config never blocks a commit; buzzcut prints the problem and lets it through.
@@ -180,17 +182,26 @@ jobs:
       - uses: Shiva-Xs/buzzcut@v0
 ```
 
-It checks the description and each commit (up to 30), writes a job summary, keeps one PR comment up to date, and fails the check when something is blocked. PRs opened by coding agents' bot accounts (Copilot, Devin, Jules, Cursor, Codex) are checked; dependency and release bots are skipped. Inputs: `max`, `comment`, `commits`, `fail`. Outputs: `score`, `grade`, `pass`. On fork PRs the token can't comment, so it warns and relies on the job summary.
+It checks the description and each commit (up to 30), writes a job summary, keeps one PR comment up to date, and fails the check when a coding agent's PR is blocked. A person's PR gets the comment and a warning; set `fail: always` to fail everyone or `fail: false` to never fail. A PR counts as an agent's when it comes from an agent's account (Copilot, Devin, Jules, Cursor, Codex…), carries an agent footer in its text, or has an agent trailer on a commit; dependency and release bots are skipped. Inputs: `max`, `comment`, `commits`, `fail`, `github-token`, and the optional `ai*` inputs below. Outputs: `score`, `grade`, `pass`. On fork PRs the token can't comment, so it warns and relies on the job summary.
+
+**Optional AI check, off by default.** Set `ai: true` with `ai-provider` (`anthropic` or `gemini`), `ai-model` and `ai-api-key` (from a repository secret), and the Action also asks a model whether the diff supports the sentences that say what the code does. It is advice only and never fails the job, a finding has to quote the diff to count, and it sends the description and the diff to the provider you chose. Without a key it is skipped. It has not been measured against planted errors yet, so treat it as a second reader, not a guarantee.
 
 ## Does it work?
 
 Tested on real PRs; the data and scripts are in [bench/](bench), so you can rerun all of it.
 
 - **It leaves good writing alone.** On work from before AI coding tools (2018 to May 2021, 75 projects: kubernetes, rust, node, cpython, linux…), it sends back **0 of 167 commits** and **5 of 561 PRs**, all GitHub's default "Update README.md" titles. In total the checks ran on 3,366 real PRs and commits.
-- **Agents write better PRs with it.** On 30 held-out real agent PRs, Sonnet 5 wrote buzzcut's version from each PR's diff, and a blind judge preferred it **30 of 30** times. It opened with what and why in 30 (originals 21) and was the right length in 30 (9). It was missing 11 facts a reviewer needs, against 67 in the originals.
+- **Agents write better PRs with it.** With the original skill (0.1), on 30 held-out real agent PRs, Sonnet 5 wrote buzzcut's version from each PR's diff, and a blind judge preferred it **30 of 30** times. It opened with what and why in 30 (originals 21) and was the right length in 30 (9). It was missing 11 facts a reviewer needs, against 67 in the originals.
+- **Against a good plain prompt (0.3).** On 32 PRs from repos nobody had used, Gemini 3.8 Flash wrote each PR twice, once from a plain "keep the facts, add nothing" prompt and once with buzzcut; a blind grader ranked buzzcut's full tool above the plain prompt in 49 of 64 descriptions (the skill text alone in 57 of 64). The full tool keeps 90% of the author's facts against 87%, and still ranks a little below the skill text alone. One writer model, and notes taken from human PR text rather than a live agent session ([details](docs/how-it-works.md#writing-against-a-plain-prompt)).
 - **Smaller models too.** With Gemini 3.8 Flash writing, all 30 pass, 29 say why (the 30th's author never gave a reason), and none keeps a bold label on every line or a file tour (7 and 4 of the originals did).
 
 Not perfect: a fact check found a detail the diff contradicts in 8 of the 30 Sonnet PRs. The full evidence and its limits are in [docs/how-it-works.md](docs/how-it-works.md#the-evidence).
+
+## What it can't do
+
+- **It looks things up; it doesn't understand the code.** A wrong number ("adds 5" when it adds 1) or a wrong account of what the code does passes: on planted errors it caught 3 of 32 and 3 of 41. The skill has the agent reread those against the diff, and the optional AI check is the only part that reads meaning.
+- **The writing evidence has limits.** It is one writer model (Gemini 3.8 Flash) working from human PR text, not a live agent session, with a grader of the same model family. The full tool ranks a little below the skill text alone ([the numbers](docs/how-it-works.md#writing-against-a-plain-prompt)).
+- **It sends back agents, not people,** unless you change `block`.
 
 ## CLI
 
@@ -230,7 +241,11 @@ report.findings;     // [{ rule: 'subject-vague', severity: 'error', … }, { ru
 
 **Is this an AI detector?** No. It flags patterns, not authors. A person who writes "leverage" gets the same note as a model that does.
 
-**Why no LLM?** A deterministic check is free, fast (20 to 40 ms per hook call), private, and gives the same answer every time, so it can gate commits and CI. Your coding agent is already a language model; what it lacked was something objective to check its writing against.
+**Why no LLM?** A deterministic check is free, fast (tens of milliseconds per hook call), private, and gives the same answer every time, so it can gate commits and CI. Your coding agent is already a language model; what it lacked was something objective to check its writing against.
+
+**What does it actually check against the diff?** That the names, files and test counts a description cites exist in the diff, the repo as it stood, or what the agent ran, and that "adds X" isn't about something the diff removes. A name it can't find is shown as a note, not a block. It can't tell whether what you say the code *does* is true, so the skill has the agent reread that part against the diff itself. On 62 invented names planted in real PRs it flagged 54, on 39 invented files 37, and on 32 wrong numbers or 41 wrong behaviors it caught 3 of each ([how it was measured](docs/how-it-works.md#checking-names-files-and-test-counts)).
+
+**Does a PR have to say how it was tested?** No. Say what you ran and what it returned when you ran something; when you didn't, leave testing out instead of writing "Not tested". What buzzcut blocks is claiming tests that didn't run.
 
 **Does it read my agent sessions?** Only the transcript file the agent's own hook hands it, only to list which commands ran, and only on your machine. Nothing is sent anywhere.
 

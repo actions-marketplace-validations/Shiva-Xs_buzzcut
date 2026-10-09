@@ -5,6 +5,7 @@ import type { PreviousDraft, SessionFacts } from './rules/rule.js';
 import type { StyleProfile } from './style.js';
 import type { Template } from './template.js';
 import { evidenceOf } from './facts.js';
+import { makeResolver, verifiedSpecificity, type RepoSearch } from './lookup.js';
 import { analyzeText, specificity } from './text.js';
 import type { DiffFacts, Finding, Grade, Kind, Message, Report, Severity } from './types.js';
 
@@ -21,6 +22,8 @@ export interface AnalyzeOptions {
   previous?: PreviousDraft | null;
   /** the repo's `length` setting: scales the word budget and the bullets allowed */
   length?: Length;
+  /** searches the repo for names the diff doesn't contain; enables the source lookups that need it */
+  repo?: RepoSearch | null;
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
@@ -34,7 +37,7 @@ export function sizeOf(diff: DiffFacts): Size {
 
 /**
  * How many prose words a description deserves, as a range. Both ends grow with the square root
- * of the diff. For a PR, a 9-line fix gets about 15 to 85 words (an opening and a Tested line),
+ * of the diff. For a PR, a 9-line fix gets about 15 to 85 words (an opening, and what ran if anything did),
  * 100 lines about 40 to 140 (plus a few bullets), 1,000 lines about 100 to 310.
  * The ceiling is the budget the length rule checks; the floor is advice for `buzzcut context`.
  * A repo's `length` setting scales both ends (short 0.6×, detailed 1.6×).
@@ -120,7 +123,7 @@ export const YAP_RULES = new Set([
 
 /**
  * The most that every other warning and note (length, bullet count, title length, em dashes,
- * a missing why or Tested line, house style) counts toward a send-back. They're about how much
+ * a missing why, house style) counts toward a send-back. They're about how much
  * is written, not whether it reads well, so on their own they stay advice: a long PR with facts
  * in it is never sent back for being long and listing its changes. The yap score itself isn't
  * capped.
@@ -157,10 +160,13 @@ export function analyze(msg: Message, diff: DiffFacts | null, opts: AnalyzeOptio
   const skip = msg.kind === 'pr' ? opts.template?.lines : undefined;
   const text = analyzeText(msg.body, msg.bodyLine, skip);
   const files = new Set(diff?.files.flatMap((f) => [f.path, f.path.split('/').pop()!]) ?? []);
-  const density = specificity(text.lines, text.words, files);
+  // Names, files and figures are looked up in the diff, the repo and the session when there is
+  // something to look in; only the ones found earn extra room. With no evidence this is the old count.
+  const resolver = makeResolver({ diff, session: opts.session, repo: opts.repo });
+  const density = resolver ? verifiedSpecificity(text.lines, text.words, files, resolver) : specificity(text.lines, text.words, files);
   const length = opts.length ?? 'normal';
   const budget = Math.round(wordBudget(msg.kind, diff, length) * specificityBonus(density));
-  const ctx = { msg, diff, text, budget, density, length, style: opts.style ?? null, session: opts.session ?? null, previous: opts.previous ?? null };
+  const ctx = { msg, diff, text, budget, density, length, style: opts.style ?? null, session: opts.session ?? null, previous: opts.previous ?? null, resolver };
 
   let findings: Finding[] = [];
   for (const rule of RULES) {
@@ -177,7 +183,7 @@ export function analyze(msg: Message, diff: DiffFacts | null, opts: AnalyzeOptio
 
 // Findings that mark a line as false or unbacked: its numbers may go, so dropped-facts
 // never asks for them back.
-const CLAIMS = new Set(['phantom-tests', 'unverified-in-session', 'vague-verification', 'ticked-boxes', 'unbacked-claim']);
+const CLAIMS = new Set(['phantom-tests', 'unverified-in-session', 'vague-verification', 'ticked-boxes', 'unbacked-claim', 'unsourced-name', 'unsourced-fact', 'test-count-mismatch']);
 
 /**
  * The evidence in a message worth keeping through a rewrite: everything except what sits on

@@ -1,3 +1,4 @@
+import { attach, MAX_TOTAL_TEXT, parseGitPatch, patchStart, type Changed } from './patch.js';
 import type { DiffFacts, FileChange } from './types.js';
 
 const TEST = [
@@ -59,7 +60,46 @@ export function buildDiff(files: FileChange[], totals?: { additions: number; del
   const docs = files.filter((f) => isDoc(f.path));
   const source = files.filter((f) => !isTest(f.path) && !isDoc(f.path));
   const generated = files.filter(generatedFile).reduce((n, f) => n + f.additions + f.deletions, 0);
-  return { files, additions, deletions, changedLines: Math.max(0, additions + deletions - generated), tests, docs, source, truncated };
+  return { files, additions, deletions, changedLines: Math.max(0, additions + deletions - generated), tests, docs, source, truncated, searchable: isSearchable(files, truncated) };
+}
+
+/** Every file that changes lines has its changed lines here (generated files and empty changes aside). */
+function isSearchable(files: FileChange[], truncated: boolean): boolean {
+  if (truncated) return false;
+  let size = 0;
+  for (const f of files) {
+    if (generatedFile(f) || f.additions + f.deletions === 0) continue;
+    if (f.added === undefined) return false;
+    size += f.added.length + (f.removed?.length ?? 0);
+  }
+  return size <= MAX_TOTAL_TEXT;
+}
+
+const cache = new WeakMap<DiffFacts, Changed>();
+
+/** All the added and removed lines of a diff, generated files left out. Empty when it carries none. */
+export function changedText(d: DiffFacts): Changed {
+  const hit = cache.get(d);
+  if (hit) return hit;
+  const added: string[] = [];
+  const removed: string[] = [];
+  for (const f of d.files) {
+    if (generatedFile(f)) continue;
+    if (f.added) added.push(f.added);
+    if (f.removed) removed.push(f.removed);
+  }
+  const out = { added: added.join('\n'), removed: removed.join('\n') };
+  cache.set(d, out);
+  return out;
+}
+
+/** Files and changed lines out of `git diff --numstat -p -U0` output: the numstat block, then the patch. */
+export function parseDiffOutput(out: string): FileChange[] {
+  const at = patchStart(out);
+  const files = parseNumstat(out.slice(0, at));
+  // Numstat can't tell how big the patch is; a diff this large is called unsearchable, not slow.
+  if (at >= out.length || out.length > 8 * MAX_TOTAL_TEXT) return files;
+  return attach(files, parseGitPatch(out.slice(at)));
 }
 
 /** Which change a diff is: its files and their line counts. */
@@ -98,13 +138,18 @@ export function parseNumstat(out: string): FileChange[] {
 /** Where a diff's changed lines are, by top-level area (two levels deep for src-like roots). */
 export { generatedFile };
 
+/** The top-level area a path belongs to: `src/payments` for src-like roots, the first folder otherwise, `(root)` for a file at the top. */
+export function areaOf(path: string): string {
+  const parts = path.split('/');
+  const deep = parts.length > 2 && /^(src|lib|packages|apps|crates|pkg|internal|cmd|app|services)$/.test(parts[0]!);
+  return parts.length === 1 ? '(root)' : deep ? `${parts[0]}/${parts[1]}` : parts[0]!;
+}
+
 export function areasOf(files: FileChange[], max = 6): { area: string; lines: number; files: number }[] {
   const by = new Map<string, { lines: number; files: number }>();
   for (const f of files) {
     if (generatedFile(f)) continue;
-    const parts = f.path.split('/');
-    const deep = parts.length > 2 && /^(src|lib|packages|apps|crates|pkg|internal|cmd|app|services)$/.test(parts[0]!);
-    const area = parts.length === 1 ? '(root)' : deep ? `${parts[0]}/${parts[1]}` : parts[0]!;
+    const area = areaOf(f.path);
     const a = by.get(area) ?? { lines: 0, files: 0 };
     a.lines += f.additions + f.deletions;
     a.files++;

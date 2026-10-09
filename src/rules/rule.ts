@@ -1,4 +1,5 @@
 import type { Length } from '../config.js';
+import type { Resolver } from '../lookup.js';
 import type { StyleProfile } from '../style.js';
 import type { TextFacts, Line } from '../text.js';
 import type { DiffFacts, Finding, Kind, Message } from '../types.js';
@@ -19,6 +20,8 @@ export interface Context {
   session: SessionFacts | null;
   /** the evidence in the previous draft of this message, when buzzcut checked one */
   previous: PreviousDraft | null;
+  /** looks names, files and figures up in the diff, the repo and the session; null when there is nothing to look in */
+  resolver: Resolver | null;
 }
 
 export interface PreviousDraft {
@@ -32,6 +35,12 @@ export interface SessionFacts {
   tests: string[];
   /** commands that ran or tried the code (tests included), as opposed to git/reading files */
   exercised: string[];
+  /** what the commands printed and what the user wrote: where a number or a name in the text may have come from */
+  text?: string;
+  /** the transcript carried command output, so something missing from `text` really wasn't printed */
+  hasOutput?: boolean;
+  /** the numbers test runs printed next to a test or pass/fail word: "Tests: 212 passed" gives 212 */
+  testCounts?: number[];
 }
 
 export interface Rule {

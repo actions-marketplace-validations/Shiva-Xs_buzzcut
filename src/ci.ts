@@ -3,10 +3,15 @@
 // teams that commit straight to main. Catches what local hooks can't: people and agents
 // without buzzcut installed.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { agentFooter } from './agent.js';
 import { analyze, parseCommit, passes, prMessage } from './analyze.js';
 import { DEFAULTS, isIgnored, loadConfig, type Config } from './config.js';
 import { buildDiff } from './diff.js';
-import { createClient, fetchPrFiles, fetchTemplate, GitHubError, isBot, type ApiPull, type Client } from './github.js';
+import { gitRepoSearch } from './lookup.js';
+import { isLookupNote } from './rules/sourced.js';
+import { aiCheck, DEFAULT_MODEL, providerOf, renderAi } from './verify.js';
+import { createClient, fetchPrFiles, fetchTemplate, fileChange, GitHubError, isBot, isCodingAgent, type ApiFile, type ApiPull, type Client } from './github.js';
 import { RULE_IDS } from './rules/index.js';
 import { repoStyle, type StyleProfile } from './style.js';
 import { findTemplate } from './template.js';
@@ -33,6 +38,18 @@ function input(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
   return v === undefined || v === '' ? fallback : v.trim();
 }
 
+/**
+ * Whether a failing check should fail the job. `fail: false` never does and `fail: always` always
+ * does; otherwise it follows the repo's `block` setting, like the git hooks: coding agents are
+ * failed, people get the comment and a warning.
+ */
+export function enforces(env: NodeJS.ProcessEnv, config: Config, agent: boolean): boolean {
+  const fail = input(env, 'fail', 'true').toLowerCase();
+  if (fail === 'false') return false;
+  if (fail === 'always') return true;
+  return config.block === 'always' || (config.block === 'agents' && agent);
+}
+
 const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 const ICON = { error: '✗', warn: '!', info: '·' } as const;
 
@@ -44,6 +61,13 @@ export function renderMarkdown(pr: Report, commits: CommitResult[], max: number,
     out.push(`### buzzcut: yap score ${pr.score}/100 (${pr.grade}) ✓`, '');
     const passed = checkedCommits ? `The description and ${checkedCommits} commit message${checkedCommits > 1 ? 's' : ''} pass.` : 'The description passes.';
     const advice = pr.findings.filter((f) => f.severity === 'warn');
+    const looked = pr.findings.filter(isLookupNote);
+    if (looked.length && (pr.grade === 'A' || pr.grade === 'B')) {
+      // Passes, but the lookups found names, files or figures that aren't anywhere: worth a line.
+      out.push('The description passes. The checks that look names, files and figures up found:', '', '| | Finding | How to fix |', '|---|---|---|');
+      for (const f of looked) out.push(`| ${ICON[f.severity]} | ${cell(f.message)} | ${cell(f.hint)} |`);
+      return out.join('\n');
+    }
     if (pr.grade === 'A' || pr.grade === 'B' || !advice.length) {
       out.push(`Short and specific. ${passed}`);
       return out.join('\n');
@@ -84,7 +108,7 @@ interface ApiCommit {
 }
 
 interface ApiCommitDetail {
-  files?: { filename: string; additions: number; deletions: number }[];
+  files?: ApiFile[];
   parents?: { sha: string }[];
 }
 
@@ -100,7 +124,7 @@ async function checkCommit(client: Client, owner: string, repo: string, sha: str
   if (!msg.title || isIgnored(msg.title, opts.config)) return null;
   const detail = await client.get<ApiCommitDetail>(`/repos/${owner}/${repo}/commits/${sha}`);
   if ((detail.parents?.length ?? 1) > 1) return null;
-  const diff = buildDiff((detail.files ?? []).map((f) => ({ path: f.filename, additions: f.additions, deletions: f.deletions })));
+  const diff = buildDiff((detail.files ?? []).map(fileChange));
   return { sha, report: analyze(msg, diff, { style: opts.style, rules: opts.config.rules, length: opts.config.length }) };
 }
 
@@ -171,10 +195,12 @@ async function runPush(run: CiRun): Promise<number> {
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, renderPushMarkdown(commits, max) + '\n');
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `pass=${allPass}\n`);
   log(`buzzcut: ${commits.length} commit${commits.length === 1 ? '' : 's'} checked; ${allPass ? 'all pass' : 'some need work'}.`);
-  if (!allPass && input(env, 'fail', 'true') !== 'false') {
+  if (allPass) return 0;
+  if (enforces(env, config, pushed.some((c) => agentFooter(c.message)))) {
     log(`::error::buzzcut: a commit message in this push doesn't pass (max ${max}, no ✗ errors). See the job summary.`);
     return 1;
   }
+  log(`::warning::buzzcut: a commit message in this push doesn't pass (max ${max}, no ✗ errors). Not failing the job: buzzcut only fails agents' work unless "block" is "always". See the job summary.`);
   return 0;
 }
 
@@ -204,13 +230,17 @@ export async function runCi(run: CiRun): Promise<number> {
   const diff = buildDiff(files, { additions: pull.additions, deletions: pull.deletions }, files.length < pull.changed_files);
   const template = findTemplate(existsSync(workspace) ? workspace : null) ?? (await fetchTemplate(client, owner, repo, pull.base.sha).catch(() => null));
   const opts = { style, template, rules: config.rules, length: config.length };
-  const prReport = analyze(prMessage(pull.title, pull.body ?? ''), diff, opts);
+  // The checkout is the PR merged into its base, so a name the PR adds is there; a name that is
+  // nowhere in it, the diff included, is one the description made up. No checkout, no lookup.
+  const prReport = analyze(prMessage(pull.title, pull.body ?? ''), diff, { ...opts, repo: existsSync(join(workspace, '.git')) ? gitRepoSearch(workspace) : null });
 
   const commits: CommitResult[] = [];
+  const messages: string[] = [];
   let checked = 0;
   if (input(env, 'commits', 'true') !== 'false') {
     const list = await client.get<ApiCommit[]>(`/repos/${owner}/${repo}/pulls/${pull.number}/commits?per_page=100`);
     for (const c of list) {
+      messages.push(c.commit.message);
       if (checked >= MAX_COMMITS) break;
       const r = await checkCommit(client, owner, repo, c.sha, c.commit.message, c.parents.length, { style, config });
       if (!r) continue;
@@ -220,7 +250,27 @@ export async function runCi(run: CiRun): Promise<number> {
   }
 
   const allPass = passes(prReport, max) && commits.every((c) => passes(c.report, max));
-  const markdown = renderMarkdown(prReport, commits, max, checked);
+
+  // The optional AI check: only when asked for, with the user's own key, and never part of pass or fail.
+  let aiSection = '';
+  let aiUnsupported = 0;
+  if (input(env, 'ai', 'false').toLowerCase() === 'true') {
+    const provider = providerOf(input(env, 'ai-provider', 'anthropic'));
+    const key = input(env, 'ai-api-key', '');
+    if (!provider) log(`::warning::buzzcut: ai-provider must be "anthropic" or "gemini"; skipping the AI check.`);
+    else if (!key) log('::notice::buzzcut: the AI check is on but there is no ai-api-key (a fork PR has no secrets); skipping it.');
+    else {
+      const model = input(env, 'ai-model', DEFAULT_MODEL[provider]);
+      try {
+        const results = await aiCheck({ provider, model, key, fetch: run.fetch, title: pull.title, body: pull.body ?? '', diff });
+        aiUnsupported = results.filter((r) => r.verdict === 'unsupported').length;
+        aiSection = renderAi(results, provider, model);
+      } catch (e) {
+        log(`::warning::buzzcut: the AI check failed and was skipped: ${(e as Error).message}`);
+      }
+    }
+  }
+  const markdown = renderMarkdown(prReport, commits, max, checked) + aiSection;
 
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, markdown.replace(MARKER + '\n', '') + '\n');
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `score=${prReport.score}\ngrade=${prReport.grade}\npass=${allPass}\n`);
@@ -232,7 +282,7 @@ export async function runCi(run: CiRun): Promise<number> {
       if (existing) {
         await client.send('PATCH', `/repos/${owner}/${repo}/issues/comments/${existing.id}`, { body: markdown });
         log(`buzzcut: updated comment ${existing.id}`);
-      } else if (!allPass) {
+      } else if (!allPass || aiUnsupported > 0 || prReport.findings.some(isLookupNote)) {
         await client.send('POST', `/repos/${owner}/${repo}/issues/${pull.number}/comments`, { body: markdown });
         log('buzzcut: posted a comment');
       }
@@ -245,9 +295,14 @@ export async function runCi(run: CiRun): Promise<number> {
   }
 
   log(`buzzcut: PR yap score ${prReport.score}/100 (${prReport.grade}); ${checked} commit${checked === 1 ? '' : 's'} checked; ${allPass ? 'passes' : 'needs work'}.`);
-  if (!allPass && input(env, 'fail', 'true') !== 'false') {
+  if (allPass) return 0;
+  // A coding agent's account, or its footer in the text or a commit trailer: the same
+  // "block agents, warn people" the git hooks follow.
+  const agent = isCodingAgent(pull.user) || agentFooter(pull.body) || messages.some(agentFooter);
+  if (enforces(env, config, agent)) {
     log(`::error::buzzcut: the PR description or a commit message doesn't pass (max ${max}, no ✗ errors). See the job summary.`);
     return 1;
   }
+  log(`::warning::buzzcut: the PR description or a commit message doesn't pass (max ${max}, no ✗ errors). Not failing the job: buzzcut only fails agents' work unless "block" is "always" (or the action's "fail" is "always"). See the comment.`);
   return 0;
 }

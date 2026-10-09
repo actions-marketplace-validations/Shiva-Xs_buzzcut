@@ -263,7 +263,7 @@ export const tickedBoxes: Rule = {
 };
 
 const VAGUE_VERIFY =
-  /\b(?:all |existing |the )?tests? (?:are |were |still |continue to )?(?:pass(?:es|ed|ing)?|green)\b|\bcontinue to pass\b|\bstill pass(?:es)?\b|\btested (?:locally|thoroughly|manually|extensively|and (?:verified|working))\b|\bverified (?:that )?(?:everything|it|the changes?) works?\b|\bworks as expected\b|\beverything works\b/i;
+  /\b(?:all |existing |the )?tests? (?:are |were |still |continue to )?(?:pass(?:es|ed|ing)?|green)\b|\bcontinue to pass\b|\bstill pass(?:es)?\b|\btested (?:locally|thoroughly|manually|extensively|and (?:verified|working))\b|\bverified (?:that )?(?:everything|it|the changes?) works?\b|\bworks as expected\b|\beverything works\b|\b(?:works?|worked|working) (?:fine|locally|well|great|correctly|properly|as intended)\b|\bon my machine\b|\bverified locally\b|\bsanity[- ]check(?:ed)?\b/i;
 
 export const vagueVerification: Rule = {
   id: 'vague-verification',
@@ -457,10 +457,6 @@ export const missingWhy: Rule = {
 };
 
 const BIG = 300;
-// Says how it was checked, or that it wasn't: "Tested: `npm test`", "Not tested", "Verified on staging".
-const VERIFIED =
-  /\b(?:tested|untested|testing|verif(?:y|ied|ication)|validat(?:ed|ion)|reproduced|smoke[- ]test\w*|test plan|ran|(?:not|never) run|checked|confirmed|tried)\b|^\s*[-*+]\s+\[[xX ]\]|✅/im;
-
 export const thinDescription: Rule = {
   id: 'thin-description',
   kinds: ['pr'],
@@ -475,23 +471,11 @@ export const thinDescription: Rule = {
         severity: 'warn',
         points: 12,
         message: text.words ? `A one-line description for a ${n}-line diff` : `No description for a ${n}-line diff`,
-        hint: "Give the reviewer a map: what changed and why (the bug, the request, the issue), the few behavior changes worth a real look and where they are, what's mechanical and roughly how much of the diff it is, and a Tested line with what you ran.",
+        hint: "Give the reviewer a map: what changed and why (the bug, the request, the issue), the few behavior changes worth a real look and where they are, what's mechanical and how many lines it is, and what ran if anything did.",
         data: { lines: n, words: text.words },
       };
     }
-    // Every description past a tiny change says how it was checked, or that it wasn't.
-    // Docs-only changes have nothing to run.
-    if (n < 30 || !text.words || (!diff!.source.length && !diff!.tests.length)) return null;
-    const all = [msg.title, ...prose.map((l) => l.text)].join('\n');
-    if (VERIFIED.test(all) || /\bCI\b/.test(all) || prose.some((l) => COMMAND.test(l.text) || RESULT.test(l.text))) return null;
-    return {
-      rule: 'thin-description',
-      severity: 'warn',
-      points: 4,
-      message: "Doesn't say how it was tested",
-      hint: 'End with a Tested line: the commands you ran in this session and what they returned (`npm test`, 212 passed). If nothing ran, write "Not tested" and what should be checked.',
-      data: { lines: n, words: text.words },
-    };
+    return null;
   },
 };
 

@@ -10,6 +10,8 @@ import { isIgnored, type Block } from './config.js';
 import { ICON, palette, renderReport } from './format.js';
 import { buildDiff } from './diff.js';
 import { amendDiff, branchDiff, commitDiff, commitMessage, defaultBase, git, operationInProgress, stagedDiff, worktreeDiff } from './git.js';
+import { gitRepoSearch } from './lookup.js';
+import { isLookupNote } from './rules/sourced.js';
 import { loadRepo, type RepoContext } from './repo.js';
 import type { PreviousDraft, SessionFacts } from './rules/rule.js';
 import { fingerprint, readSeen, recordSeen } from './seen.js';
@@ -55,6 +57,14 @@ export function agentFeedback(what: string, r: Report, max: number): string {
   return lines.join('\n');
 }
 
+/** What an agent is told about a message that passes but has notes from the lookups. Not a block. */
+export function agentAdvice(what: string, r: Report): string {
+  const notes = r.findings.filter(isLookupNote);
+  const lines = [`buzzcut: this ${what} passes, and these notes are for you. Nothing was blocked. Fix them if they're right; if a name is real (from a dependency or another repo), say where it comes from.`];
+  for (const f of notes.slice(0, 6)) lines.push(`${ICON[f.severity]} ${f.rule}: ${f.message}${/[.?!]$/.test(f.message) ? '' : '.'} ${f.hint}`);
+  return lines.join('\n');
+}
+
 // ─── git commit-msg ──────────────────────────────────────────────────────────
 
 export function commitMsgHook(file: string, h: HookEnv): HookResult {
@@ -72,7 +82,7 @@ export function commitMsgHook(file: string, h: HookEnv): HookResult {
 
   // An empty index usually means `--amend` with only a new message.
   const diff = stagedDiff(h.cwd) ?? amendDiff(h.cwd);
-  const report = analyze(msg, diff, { style: repo.style, rules: repo.config.rules, length: repo.config.length });
+  const report = analyze(msg, diff, { style: repo.style, rules: repo.config.rules, length: repo.config.length, repo: gitRepoSearch(h.cwd) });
   const max = repo.config.max;
   const p = palette(h.color);
   if (passes(report, max)) return through(ok(p.dim(`buzzcut ✓ yap score ${report.score} (${report.grade})`) + '\n'));
@@ -177,6 +187,8 @@ export function prePushHook(remote: string, stdin: string, h: HookEnv, installed
 interface Problem {
   what: string;
   report: Report;
+  /** the message passes: these are notes for the agent, not a reason to stop the command */
+  advice?: boolean;
 }
 
 /**
@@ -189,7 +201,8 @@ function judge(key: string, dir: string, msg: Message, max: number, run: (previo
   const report = run(prev && !prev.warned ? { evidence: prev.evidence, strict: true } : null);
   if (passes(report, max)) {
     clearDraft(key, dir);
-    return null;
+    // A message that passes but has notes from the lookups is handed back, to be shown as advice.
+    return report.findings.some(isLookupNote) ? report : null;
   }
   const warned = Boolean(prev?.warned) || report.findings.some((f) => f.rule === 'dropped-facts');
   const evidence = [...new Set([...(prev?.evidence ?? []), ...keepableEvidence(msg, report)])];
@@ -211,8 +224,8 @@ function checkCommit(call: CommitCall, dir: string, repo: RepoContext, session: 
       : call.amend
         ? amendDiff(dir)
         : stagedDiff(dir);
-  const report = judge('hook:commit', dir, msg, repo.config.max, (previous) => analyze(msg, diff, { style: repo.style, rules: repo.config.rules, length: repo.config.length, session, previous }));
-  return report ? { what: 'commit message', report } : null;
+  const report = judge('hook:commit', dir, msg, repo.config.max, (previous) => analyze(msg, diff, { style: repo.style, rules: repo.config.rules, length: repo.config.length, session, previous, repo: gitRepoSearch(dir) }));
+  return report ? { what: 'commit message', report, advice: passes(report, repo.config.max) } : null;
 }
 
 function checkPr(call: PrCall, dir: string, repo: RepoContext, session: SessionFacts | null): Problem | null {
@@ -224,9 +237,9 @@ function checkPr(call: PrCall, dir: string, repo: RepoContext, session: SessionF
   const diff = base ? branchDiff(base, dir) : null;
   const msg = prMessage(call.title ?? '', body ?? '');
   const report = judge(branchKey(dir), dir, msg, repo.config.max, (previous) =>
-    analyze(msg, diff, { style: repo.style, template: repo.template, rules: repo.config.rules, length: repo.config.length, session, previous }),
+    analyze(msg, diff, { style: repo.style, template: repo.template, rules: repo.config.rules, length: repo.config.length, session, previous, repo: gitRepoSearch(dir) }),
   );
-  return report ? { what: 'PR description', report } : null;
+  return report ? { what: 'PR description', report, advice: passes(report, repo.config.max) } : null;
 }
 
 /** Problems with the commits and PRs in a shell command, or [] to let it run. */
@@ -379,7 +392,7 @@ export function checkMcp(call: McpCall, cwd: string, transcript?: string): { pro
   const repo = loadRepo(cwd);
   const session = transcript ? readSession(transcript) : null;
   const a = call.args;
-  const opts = { style: repo.style, template: repo.template, rules: repo.config.rules, length: repo.config.length, session };
+  const opts = { style: repo.style, template: repo.template, rules: repo.config.rules, length: repo.config.length, session, repo: repo.root ? gitRepoSearch(cwd) : null };
 
   if (isPr) {
     const title = str(a.title) ?? null;
@@ -395,9 +408,9 @@ export function checkMcp(call: McpCall, cwd: string, transcript?: string): { pro
     if (repo.root) failing = judge(branchKey(cwd), cwd, msg, repo.config.max, (previous) => analyze(msg, diff, { ...opts, previous }));
     else {
       const report = analyze(msg, diff, opts);
-      failing = passes(report, repo.config.max) ? null : report;
+      failing = passes(report, repo.config.max) && !report.findings.some(isLookupNote) ? null : report;
     }
-    return { problems: failing ? [{ what: 'PR description', report: failing }] : [], repo };
+    return { problems: failing ? [{ what: 'PR description', report: failing, advice: passes(failing, repo.config.max) }] : [], repo };
   }
 
   // A commit made through the connector: the files are right there in the arguments.
@@ -411,7 +424,8 @@ export function checkMcp(call: McpCall, cwd: string, transcript?: string): { pro
   const msg = parseCommit(message);
   if (!msg.title || isIgnored(msg.title, repo.config)) return { problems: [], repo };
   const report = analyze(msg, files.length ? buildDiff(files) : null, opts);
-  return { problems: passes(report, repo.config.max) ? [] : [{ what: 'commit message', report }], repo };
+  const ok = passes(report, repo.config.max);
+  return { problems: ok && !report.findings.some(isLookupNote) ? [] : [{ what: 'commit message', report, advice: ok }], repo };
 }
 
 /**
@@ -434,9 +448,12 @@ export function agentHook(payload: string, flavor: AgentFlavor, h: HookEnv): Hoo
   try {
     const { problems, repo } = mcp ? checkMcp(mcp, cwd ?? h.cwd, transcript) : checkCommand(command!, cwd ?? h.cwd, transcript);
     if (!problems.length || !repo) return pass(flavor);
-    const reason = problems.map((p) => agentFeedback(p.what, p.report, repo.config.max)).join('\n\n');
+    const failing = problems.filter((p) => !p.advice);
+    // Only notes: the command runs, and the agent is told what the lookups found.
+    if (!failing.length) return advise(flavor, problems.map((p) => agentAdvice(p.what, p.report)).join('\n\n'));
+    const reason = failing.map((p) => agentFeedback(p.what, p.report, repo.config.max)).join('\n\n');
     if (repo.config.block === 'never') return advise(flavor, reason);
-    const summary = problems.map((p) => `${p.what}: yap score ${p.report.score} (${p.report.grade})`).join('; ');
+    const summary = failing.map((p) => `${p.what}: yap score ${p.report.score} (${p.report.grade})`).join('; ');
     return deny(flavor, reason, summary);
   } catch (e) {
     return { ...pass(flavor), stderr: `buzzcut hook error (let the command run): ${(e as Error).message}\n` };

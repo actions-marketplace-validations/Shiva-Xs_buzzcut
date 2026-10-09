@@ -79,19 +79,19 @@ export function shapeFor(kind: Kind, size: Size | null): string[] {
     ];
   }
   const opening = 'Opening, 1 or 2 sentences: what changed and why, in plain words (no "What:" or "Why:" labels).';
-  const tested = 'Tested: the commands you ran and what they returned. If nothing ran, "Not tested:" and what should be checked.';
-  const risk = 'Optional, one line: a risk, breaking change, migration or follow-up.';
-  if (size === 'tiny') return [opening, 'Bullets only if there are 2 or more separate behavior changes.', risk, tested];
+  const tested = 'Tested only when something ran or you were told what ran or that tests pass: the command and what it returned. If nothing ran and nobody said, leave testing out (no "Not tested" line).';
+  const carry = 'What you were given comes first, in their words: the reason, the issue link with its word ("Closes #12"), docs and other PRs cited and why, what was run and what it showed, a question the author is asking, what it leaves for later, an example. Cut padding, never these.';
+  if (size === 'tiny') return [opening, carry, 'Bullets only if there are 2 or more separate behavior changes.', tested];
   const bullets =
     size === 'big'
-      ? '2 to 5 bullets, more on a diff this big: the changes a reviewer would ask about, one per bullet in about 25 words, each with where to look and the values (old → new, limits, defaults). More bullets, not longer ones. Group by area, never file by file. Say which part is mechanical and roughly how much of the diff it is.'
-      : '2 to 5 bullets: the changes a reviewer would ask about, one per bullet in about 25 words, each with where to look (function, setting, endpoint) and the values (old → new, limits, defaults). Group by area, never file by file.';
-  return [opening, bullets, risk, tested];
+      ? 'Bullets for the changes a reviewer would ask about, each with where to look and the values (old → new, limits, defaults); more bullets, not longer ones. Group by area, never file by file. Say which part is mechanical (tests, generated, renamed) with the line counts above, not a percentage.'
+      : 'Bullets, up to 5, only for the changes a reviewer would ask about, each with where to look and the values (old → new, limits, defaults). Group by area, never file by file.';
+  return [opening, carry, bullets, tested];
 }
 
 // What each non-default length asks of the writer. The facts rules are the same at every length.
 const LENGTH_NOTE: Record<Exclude<Length, 'normal'>, string> = {
-  short: 'Fewer, tighter bullets and no extra background; still say what changed and why, keep every fact, and keep the Tested line.',
+  short: 'Fewer, tighter bullets and no extra background; still say what changed and why, and keep every fact and anything you ran.',
   detailed: 'More room for reasoning: the design choices, what was ruled out and why, and the risks, still grouped by area, never file by file.',
 };
 
@@ -224,10 +224,10 @@ export function renderContext(c: AgentContext): string {
   if (c.kind === 'pr' && c.diff?.size === 'big') out.push("  A few short plain headers are fine on a diff this big: Behavior changes / What's mechanical / How to review / Risk.");
   if (c.length !== 'normal') out.push(`Length: ${c.length}, set in this repo's buzzcut config. ${LENGTH_NOTE[c.length]}`);
   if (c.kind === 'pr') {
-    out.push(`Words: about ${n(c.range.floor)} to ${n(c.range.budget)}. Text dense with numbers, code and links gets up to 2.5× the top; padding doesn't.`);
+    out.push("Length follows what you were given, not the size of the diff: a short note and a small change is a title and a sentence or two. Don't add detail from the diff to make it longer; padding is flagged, facts you were given never are.");
     out.push(
       '',
-      'From your session, not the diff: the why (the bug, the error message quoted, the issue link, who asked) and the Tested line (the commands you ran in this session and what they returned).',
+      'From what you were given, not the diff: the why (the bug, the error message quoted, the issue link, who asked) and what ran, if anything (the commands and what they returned). Put those in first, then add where and what from the diff.',
     );
   } else {
     out.push(`Body words: ${n(c.range.budget)} at most, up to 2.5× more if it's dense with specifics (numbers, code references, links). A body is optional.`);

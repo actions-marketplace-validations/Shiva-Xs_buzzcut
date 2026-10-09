@@ -1,0 +1,92 @@
+# Writing test v3: plan and pass/fail rules, written before any result
+
+**Question.** Does buzzcut's skill (and its checker) produce better pull request descriptions than a plain "write a clear description" prompt? Round 2 of the three-arm test said: close, not better. This test is built to find out whether it can be made better, and to say so honestly if it can't.
+
+## Arms
+
+| arm | what the writer gets |
+|---|---|
+| D | "Write the pull request description." The diff and the notes. No rules. This is what an agent does by default. |
+| C | The same, plus: clear, keep every needed fact from the notes, add nothing, say it wasn't tested if the notes don't say. The best plain prompt. |
+| B0 | The skill text only. No context, no checker. |
+| B | The skill text, `buzzcut context` for the diff, and the checker loop (up to 3 drafts). |
+| C2 | C with one rule changed (added in tuning round 1): say how it was checked only if the notes say something ran; otherwise leave testing out. The plain prompt with the same idea the skill now has. |
+
+B against B0 shows whether the machinery adds anything beyond the words. B against C is the claim.
+
+## Sets
+
+Each PR is written in two conditions, so a set `dev` becomes `devR` and `devT`:
+
+- **R** rich notes: the author's own PR text.
+- **T** thin notes: its first one or two sentences, at most 32 words. It stands for an agent that barely kept track of why or how it was tested, where inventing is tempting. Nothing in the notes about how it was tested means the right answer is "Not tested".
+
+- **dev**: 36 PRs from the dev half of the held-out set (15 tiny, 16 normal, 5 big; 8 repos). We tune the skill on these.
+- **test**: PRs from a fresh pool of 11 repos that appear nowhere in the corpus or the held-out set (`pool.json`, frozen before anything was read; sha256 in the file). 35 PRs (14 tiny, 14 normal, 7 big) from all 11 repos, list frozen in `manifest-test.json` (sha256 ec1cf972…). Built once, sealed: nobody opens `sets/test*` or reads its outputs or grades until the skill is frozen. Run once per arm.
+
+The writer is Gemini 3.8 Flash in Antigravity, every arm. Real agents are other models, so this says what the skill does for one capable model, not for all.
+
+## Grading
+
+1. **Checklist.** Before the arms are graded, Gemini lists the needed facts in each PR's notes (`TASK-CHECKLIST.md`). It sees only the notes and the diff, never a description.
+2. **Grade.** Gemini sees the notes, diff, checklist and the descriptions with shuffled letters, and records which checklist facts each kept, each claim with no support in the notes or diff, whether it claims testing the notes don't, and a rank (`TASK-GRADE.md`). The key stays sealed.
+3. **No-model scores** (`score.mjs`): words, yap score, this branch's checker, invented names and figures, testing claims the notes lack, the author's numbers and links kept.
+4. **Audit.** Claude blind-grades a random 15% of the graded PRs itself and reports how often it agrees with Gemini on: each kept fact, the count of unsupported claims, and the order of the arms. If the arms' order agrees on fewer than 70% of decided pairs, the Gemini grades are reported as unreliable and Claude grades the test set itself.
+
+The grader and the writer are the same model family. That can favour whatever style that family prefers, in every arm alike, which is why the audit is by a different model.
+
+## Tuning rules
+
+- Only the skill text and what the checker prints may change, and only from what dev shows. No PR-specific rules, no quoting a dev PR in the skill. Every change is written down with the failure it answers.
+- At most three tuning rounds on dev. Round 0 is the skill as it stands (commit aa05aa2).
+- Tuning stops when B clears the dev bar below, or after round 3, whichever comes first.
+- Then the skill and checker are frozen (the commit is recorded), and test is run once. A bad test result is not tuned away: any later change to the skill means a fresh test pool.
+
+## Pass and fail, on test, with R and T together
+
+B **beats the default** if its mean rank is lower than D's by at least 0.30 and it wins more PRs than it loses against D.
+
+B **beats the plain prompt** if all of these hold against C, and against C2 (the stricter of the two is the bar):
+
+1. mean rank lower by at least 0.10;
+2. more PRs won than lost;
+3. PRs with an unsupported claim no more than C's;
+4. the share of checklist facts kept within 5 points of C's, or higher.
+
+The same four conditions, read on dev, are the dev bar. If B clears the default but not the plain prompt, the release says the skill matches a hand-written prompt and adds the checker, the hooks and the CI action, and does not say it writes better PRs than a good prompt.
+
+What the test cannot show is written in the results: one writer model, human PR text not agent sessions, R and T notes built by rule from the same body.
+
+## Changes after round 0 (kept for the record)
+
+- Round 0 audit: the grader's arm order agreed with Claude's on 68% of the pairs both ranked (bar: 70%), with many ties. The fact, unsupported and testing grades agreed at 95% to 98%. Result and the changes made are in `RESULTS-DEV.md`. After round 0 I wrote that Claude would grade the test ranks itself. Round 2, under rubric v2, agreed on 85% of the pairs (no ties), so before the test is run the rule goes back to the original one: Gemini grades under rubric v2 and Claude audits 25% of the test PRs blind; if the order agrees on under 70% of the pairs, Claude grades all of them.
+- Grader rubric v2 (from round 1 on): boilerplate testing lines, mentions of the notes or session and headings on small changes count against a description, and ties only when equal.
+- Tuning round 1: a Tested line only when something ran (design call, with the evidence above); arm C2 added.
+
+## Round 3: fixing the full tool (written before anything is run)
+
+**What the sealed test showed.** The full tool B (skill, `buzzcut context`, checker loop) ranked 2.76 against 1.84 for the skill text alone (B0), kept 80% of the author's facts against 92%, and was worst on big PRs. Reading B's and B0's outputs side by side on the dev and test sets (so both are now spent for any claim) found where the facts went: B dropped the author's "tests pass" and "ran X" statements (its context said to give a Tested line only for what *you* ran), dropped reasons and cited links on tiny PRs (its context gave a word range "about 15 to 80" that read as a target), and on big PRs spent words on rough "about 90% of the diff" lines and a headed template. The checker itself fired no length findings on either arm.
+
+**The fix (one cycle).** Only text the writer is given: `buzzcut context` and `SKILL.md`. The Tested line takes what the author says ran as well as what you ran; the carry-over list gains "what they ran and what it showed" and "docs and links they cite"; the word range is a ceiling that carried-over facts may exceed, with no floor; "mechanical" is stated with the line counts, not a percentage; and the carry-over item comes before the bullets in the shape, so what the author gave is written first. The grader packets now carry the diff summary from `buzzcut context` for every arm, so a figure counted from the whole diff is checkable.
+
+**Fresh set.** `fresh` is built from `pool2.json`, a second pool from repos in neither the corpus, the held-out set nor the first pool, frozen before it was read. Arms: B (the fixed tool), B0 (the fixed skill text), C2 (the plain prompt). Same two kinds of notes, same rubric v2, Gemini writes and grades, Claude audits 25% blind.
+
+**B is fixed if all of these hold on `fresh`:**
+
+1. B's mean rank is no worse than B0's by more than 0.15;
+2. B keeps at least B0's share of the needed facts minus 3 points;
+3. B's PRs with an unsupported claim are no more than B0's plus 2;
+4. B beats C2: lower mean rank and more PRs won than lost;
+5. on big PRs, B's mean rank is no worse than C2's.
+
+If it passes, the docs say the full tool matches the skill text. If it misses, nothing more is tuned on this set: the docs keep calling the checker loop unproven, and 0.3.0 ships that way. No second cycle.
+
+## Round 4: the second cycle (written before anything is run)
+
+**Round 3 result** (`RESULTS-FRESH.md`): facts fixed (B 91% against B0's 92%), writing not: two of five conditions. B is still longer than B0 on thin notes at every size and ranks behind it and level with the plain prompt.
+
+**The fix (the last one).** Only the text `buzzcut context` gives the writer: no numbered slots and no "Optional" risk slot; the word figure is gone (the checker still flags padding); and a line that length follows what you were given, not the size of the diff. The carry-over, Tested and mechanical-counts lines stay.
+
+**Fresh set.** `fresh2`: 32 PRs (12 tiny, 12 normal, 8 big) from 16 repos, 10 of them not in `fresh`, built from the PRs of `pool2.json` that neither `fresh` nor any earlier set used (all 828 fetched before the draw). Arms B, B0, C2; same notes, rubric, grader and audit as round 3.
+
+**Same five conditions as round 3.** This is the last cycle. If B misses, 0.3.0 ships as is, and the docs say the skill text alone writes better than the full tool.
